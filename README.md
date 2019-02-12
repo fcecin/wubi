@@ -1,4 +1,7 @@
 # wubi
+
+WARNING: This is EXPERIMENTAL software and it has not been audited or throughly tested. Use it at your own risk.
+
 This is a simple extension of the eosio.token smart contract that pays a fixed Universal Basic Income (UBI) to all account holders. It is intended to be deployed into eosio instances that enforce one-human-user-per-account limits, in which case it will issue one new token per person in perpetuity. 
 
 This code is mostly copied from the standard eosio.token contract, with a few modifications.
