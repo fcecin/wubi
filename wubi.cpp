@@ -99,7 +99,12 @@ void token::transfer( name    from,
                       asset   quantity,
                       string  memo )
 {
-    eosio_assert( from != to, "cannot transfer to self" );
+    // We will use transfers to self as a way to log UBI issuance, so we have to allow them.
+    // Users doing transfers to self are harmless. If we're worried about spam, users can
+    //   already spam transfers between two accounts they own.
+    // Hopefully, wallets won't be confused by this.
+    //eosio_assert( from != to, "cannot transfer to self" );
+
     require_auth( from );
     eosio_assert( is_account( to ), "to account does not exist");
     auto sym = quantity.symbol.code();
@@ -114,10 +119,15 @@ void token::transfer( name    from,
     eosio_assert( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
     eosio_assert( memo.size() <= 256, "memo has more than 256 bytes" );
 
+    // Sending to self is a no-op. Just log it.
+    if (from == to)
+      return;
+
     auto payer = has_auth( to ) ? to : from;
 
     //------------------------------------------------------------------------------------------
     // UBI claim check begin.
+    // TODO: for non KYC accounts, just avoid this entire block
     //------------------------------------------------------------------------------------------
 
     accounts from_acnts( _self, from.value );
@@ -152,17 +162,22 @@ void token::transfer( name    from,
       if (claim_quantity.amount > available_amount)
 	claim_quantity.set_amount(available_amount);
 
+      time_type last_claim_day_delta = lost_days + (claim_quantity.amount / precision_multiplier);
+      
       if (claim_quantity.amount > 0) {
+
+	// Log this basic income payment with a fake inline transfer action to self.
+	log_claim( from, claim_quantity, from_account.last_claim_day, last_claim_day_delta, lost_days );
 
 	// Update the token total supply.
 	statstable.modify( st, same_payer, [&]( auto& s ) {
 	    s.supply += claim_quantity;
-        });
+        });	
 
 	// Finally, move the claim date window proportional to the amount of days of income we claimed
 	//   (and also account for days of income that have been forever lost)
 	from_acnts.modify( from_account, from, [&]( auto& a ) {
-	    a.last_claim_day += lost_days + (claim_quantity.amount / precision_multiplier);
+	    a.last_claim_day += last_claim_day_delta;
 	  });
 
 	// Pay the user doing the transfer ("from").
@@ -196,12 +211,36 @@ void token::add_balance( name owner, asset value, name ram_payer )
    if( to == to_acnts.end() ) {
       to_acnts.emplace( ram_payer, [&]( auto& a ){
         a.balance = value;
+	// When destination account "to" claims their first UBI later, it will have started
+	//   counting from now (when their token account balance was created).
+	a.last_claim_day = get_today() - 1;
       });
    } else {
       to_acnts.modify( to, same_payer, [&]( auto& a ) {
         a.balance += value;
       });
    }
+}
+
+// This calls a transfer-to-self just to log a memo that explains what the UBI payment was.
+void token::log_claim( name claimant, asset claim_quantity, time_type last_claim_day, time_type last_claim_day_delta, time_type lost_days )
+{
+  string claim_memo = "[UBI] +";
+  claim_memo.append( claim_quantity.to_string() );
+  claim_memo.append(" (" );
+  claim_memo.append( std::to_string(last_claim_day) );
+  claim_memo.append( "|" );
+  claim_memo.append( std::to_string(last_claim_day + last_claim_day_delta) );
+  claim_memo.append( ")" );
+  if (lost_days > 0) {
+    claim_memo.append(" (Lost ");
+    claim_memo.append( std::to_string(lost_days) );
+    claim_memo.append(" days of income)");
+  }
+
+  SEND_INLINE_ACTION( *this, transfer, { {claimant, "active"_n} },
+		      { claimant, claimant, claim_quantity, claim_memo }
+  );
 }
 
 // Opening an account will immediately reward the user with UBI.
@@ -237,11 +276,17 @@ void token::open( name owner, const symbol& symbol, name ram_payer )
 	 s.supply += claim_quantity;
        });
 
+     time_type last_claim_day = get_today() - 1;
+     time_type last_claim_day_delta = claim_quantity.amount / precision_multiplier;
+
      // Create the account with the initial UBI claim.
      acnts.emplace( ram_payer, [&]( auto& a ){
 	 a.balance = claim_quantity;
-	 a.last_claim_day = get_today() - 1 + (claim_quantity.amount / precision_multiplier);
+	 a.last_claim_day = last_claim_day + last_claim_day_delta;
        });
+
+     // Log this basic income payment with a fake inline transfer action to self.
+     log_claim( owner, claim_quantity, last_claim_day, last_claim_day_delta, 0 );
    }
 }
 

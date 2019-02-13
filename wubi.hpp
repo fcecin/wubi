@@ -70,6 +70,9 @@ namespace eosio {
 
          struct [[eosio::table]] account {
 	    asset     balance;
+
+	    // FIXME/TODO: this has to be moved into its own structure since it seems
+	    //   putting it here will confuse all existing wallets.
 	    time_type last_claim_day;
 
             uint64_t primary_key()const { return balance.symbol.code().raw(); }
@@ -88,6 +91,8 @@ namespace eosio {
 
          void sub_balance( name owner, asset value );
          void add_balance( name owner, asset value, name ram_payer );
+	 
+	 void log_claim( name claimant, asset claim_quantity, time_type last_claim_day, time_type last_claim_day_delta, time_type lost_days );
 	 
 	 int64_t get_precision_multiplier ( const symbol& symbol ) {
 	   int64_t precision_multiplier = 1;
