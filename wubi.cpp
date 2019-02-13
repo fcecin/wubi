@@ -135,8 +135,11 @@ void token::transfer( name    from,
       int64_t claim_amount = today - from_account.last_claim_day - 1;
       // The limit for claiming accumulated past income is 360 days/coins. Unclaimed tokens past that
       //   one year maximum of accumulation are lost.
-      if (claim_amount > max_past_claim_days)
-	claim_amount = max_past_claim_days;     
+      time_type lost_days = 0;
+      if (claim_amount > max_past_claim_days) {
+        lost_days = claim_amount - max_past_claim_days;
+	claim_amount = max_past_claim_days;
+      }
       // You always claim for the next 30 days, counting today. This is the advance-payment part
       //   of the UBI claim.
       claim_amount += claim_days;
@@ -156,9 +159,10 @@ void token::transfer( name    from,
 	    s.supply += claim_quantity;
         });
 
-	// Finally, move the claim date window proportional to the amount of days of income we claimed. 
+	// Finally, move the claim date window proportional to the amount of days of income we claimed
+	//   (and also account for days of income that have been forever lost)
 	from_acnts.modify( from_account, from, [&]( auto& a ) {
-	    a.last_claim_day = today + (claim_quantity.amount / precision_multiplier) - 1;
+	    a.last_claim_day += lost_days + (claim_quantity.amount / precision_multiplier);
 	  });
 
 	// Pay the user doing the transfer ("from").
