@@ -71,10 +71,6 @@ namespace eosio {
          struct [[eosio::table]] account {
 	    asset     balance;
 
-	    // FIXME/TODO: this has to be moved into its own structure since it seems
-	    //   putting it here will confuse all existing wallets.
-	    time_type last_claim_day;
-
             uint64_t primary_key()const { return balance.symbol.code().raw(); }
          };
 
@@ -91,9 +87,22 @@ namespace eosio {
 
          void sub_balance( name owner, asset value );
          void add_balance( name owner, asset value, name ram_payer );
-	 
+
+	 // Unfortunately, we need to waste a ton of space to store an extra 16 bits per user account
+	 //    to conform to the interface expected by eosio.token.
+	 // As with the "account" struct, the scope is recycled as the token holder, and the primary
+	 //    key of our structure is the token symbol code.
+	 struct [[eosio::table]] extra {
+	    uint64_t  symbol_code_raw;
+	    time_type last_claim_day;
+
+	    uint64_t primary_key()const { return symbol_code_raw; }
+	 };
+
+	 typedef eosio::multi_index< "extras"_n, extra > extras;
+
 	 void log_claim( name claimant, asset claim_quantity, time_type last_claim_day, time_type last_claim_day_delta, time_type lost_days );
-	 
+ 
 	 int64_t get_precision_multiplier ( const symbol& symbol ) {
 	   int64_t precision_multiplier = 1;
 	   for (int i=0; i<symbol.precision(); ++i)
@@ -101,7 +110,9 @@ namespace eosio {
 	   return precision_multiplier;
 	 }
 
-	 time_type get_today() { return (time_type)(current_time() / 86400000000); }
+	 static string days_to_string( int64_t days );
+ 
+	 static time_type get_today() { return (time_type)(current_time() / 86400000000); }
 
 	 static const int64_t claim_days = 30;
 

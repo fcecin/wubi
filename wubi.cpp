@@ -127,22 +127,23 @@ void token::transfer( name    from,
 
     //------------------------------------------------------------------------------------------
     // UBI claim check begin.
+    //
     // TODO: for non KYC accounts, just avoid this entire block
     //------------------------------------------------------------------------------------------
 
-    accounts from_acnts( _self, from.value );
-    const auto& from_account = from_acnts.get( sym.raw(), "no balance object found" );
+    extras from_xtrs( _self, from.value );
+    const auto& from_extra = from_xtrs.get( sym.raw(), "no balance object found" );
    
     const time_type today = get_today();
 
-    if (from_account.last_claim_day < today) {
+    if (from_extra.last_claim_day < today) {
 
       // The UBI grants 1 token per day per account. 
       // Users will automatically issue their own money as a side-effect of giving money to others.
       
       // Compute the claim amount relative to days elapsed since the last claim, excluding today's pay.
       // If you claimed yesterday, this is zero.
-      int64_t claim_amount = today - from_account.last_claim_day - 1;
+      int64_t claim_amount = today - from_extra.last_claim_day - 1;
       // The limit for claiming accumulated past income is 360 days/coins. Unclaimed tokens past that
       //   one year maximum of accumulation are lost.
       time_type lost_days = 0;
@@ -167,16 +168,16 @@ void token::transfer( name    from,
       if (claim_quantity.amount > 0) {
 
 	// Log this basic income payment with a fake inline transfer action to self.
-	log_claim( from, claim_quantity, from_account.last_claim_day, last_claim_day_delta, lost_days );
+	log_claim( from, claim_quantity, from_extra.last_claim_day, last_claim_day_delta, lost_days );
 
 	// Update the token total supply.
 	statstable.modify( st, same_payer, [&]( auto& s ) {
 	    s.supply += claim_quantity;
-        });	
+        });
 
 	// Finally, move the claim date window proportional to the amount of days of income we claimed
 	//   (and also account for days of income that have been forever lost)
-	from_acnts.modify( from_account, from, [&]( auto& a ) {
+	from_xtrs.modify( from_extra, from, [&]( auto& a ) {
 	    a.last_claim_day += last_claim_day_delta;
 	  });
 
@@ -211,8 +212,14 @@ void token::add_balance( name owner, asset value, name ram_payer )
    if( to == to_acnts.end() ) {
       to_acnts.emplace( ram_payer, [&]( auto& a ){
         a.balance = value;
-	// When destination account "to" claims their first UBI later, it will have started
-	//   counting from now (when their token account balance was created).
+      });
+
+      // Create the extras table row too.
+      // User will be able to claim their first UBI by giving any non-zero amount of what 
+      //   they just received to someone else.
+      extras xtrs( _self, owner.value );
+      xtrs.emplace( ram_payer, [&]( auto& a ){
+	a.symbol_code_raw = value.symbol.code().raw();
 	a.last_claim_day = get_today() - 1;
       });
    } else {
@@ -220,27 +227,6 @@ void token::add_balance( name owner, asset value, name ram_payer )
         a.balance += value;
       });
    }
-}
-
-// This calls a transfer-to-self just to log a memo that explains what the UBI payment was.
-void token::log_claim( name claimant, asset claim_quantity, time_type last_claim_day, time_type last_claim_day_delta, time_type lost_days )
-{
-  string claim_memo = "[UBI] +";
-  claim_memo.append( claim_quantity.to_string() );
-  claim_memo.append(" (" );
-  claim_memo.append( std::to_string(last_claim_day) );
-  claim_memo.append( "|" );
-  claim_memo.append( std::to_string(last_claim_day + last_claim_day_delta) );
-  claim_memo.append( ")" );
-  if (lost_days > 0) {
-    claim_memo.append(" (Lost ");
-    claim_memo.append( std::to_string(lost_days) );
-    claim_memo.append(" days of income)");
-  }
-
-  SEND_INLINE_ACTION( *this, transfer, { {claimant, "active"_n} },
-		      { claimant, claimant, claim_quantity, claim_memo }
-  );
 }
 
 // Opening an account will immediately reward the user with UBI.
@@ -256,38 +242,44 @@ void token::open( name owner, const symbol& symbol, name ram_payer )
 
    accounts acnts( _self, owner.value );
    auto it = acnts.find( sym_code_raw );
-   if( it == acnts.end() ) {
+   if ( it != acnts.end() )
+     return;
 
-     // we are assuming that every account in the system is an account tied to an unique
-     // human identity. We will attempt to claim 1.0 token per day for the next 30 days.
-     //
-     // TODO: for non KYC accounts, just set claim_quantity to zero
-     //
-     int64_t precision_multiplier = get_precision_multiplier(symbol);
-     asset claim_quantity = asset{claim_days * precision_multiplier, symbol};
+   // we are assuming that every account in the system is an account tied to an unique
+   // human identity. We will attempt to claim 1.0 token per day for the next 30 days.
+   //
+   // TODO: for non KYC accounts, just set claim_quantity to zero
+   //
+   int64_t precision_multiplier = get_precision_multiplier(symbol);
+   asset claim_quantity = asset{claim_days * precision_multiplier, symbol};
 
-     // Respect the max_supply limit for UBI issuance.
-     int64_t available_amount = st.max_supply.amount - st.supply.amount;
-     if (claim_quantity.amount > available_amount)
-       claim_quantity.set_amount(available_amount);
-     
-     // Update the token total supply to account for the issued UBI tokens.
-     statstable.modify( st, same_payer, [&]( auto& s ) {
-	 s.supply += claim_quantity;
-       });
+   // Respect the max_supply limit for UBI issuance.
+   int64_t available_amount = st.max_supply.amount - st.supply.amount;
+   if (claim_quantity.amount > available_amount)
+     claim_quantity.set_amount(available_amount);
 
-     time_type last_claim_day = get_today() - 1;
-     time_type last_claim_day_delta = claim_quantity.amount / precision_multiplier;
+   // Update the token total supply to account for the issued UBI tokens.
+   statstable.modify( st, same_payer, [&]( auto& s ) {
+       s.supply += claim_quantity;
+     });
 
-     // Create the account with the initial UBI claim.
-     acnts.emplace( ram_payer, [&]( auto& a ){
-	 a.balance = claim_quantity;
-	 a.last_claim_day = last_claim_day + last_claim_day_delta;
-       });
+   // Create the account with the initial UBI claim.
+   acnts.emplace( ram_payer, [&]( auto& a ){
+       a.balance = claim_quantity;
+     });
 
-     // Log this basic income payment with a fake inline transfer action to self.
-     log_claim( owner, claim_quantity, last_claim_day, last_claim_day_delta, 0 );
-   }
+   time_type last_claim_day = get_today() - 1;
+   time_type last_claim_day_delta = claim_quantity.amount / precision_multiplier;
+
+   // Create the extras table row too
+   extras xtrs( _self, owner.value );
+   xtrs.emplace( ram_payer, [&]( auto& a ){
+       a.symbol_code_raw = sym_code_raw;
+       a.last_claim_day = last_claim_day + last_claim_day_delta;
+     });
+
+   // Log this basic income payment with a fake inline transfer action to self.
+   log_claim( owner, claim_quantity, last_claim_day, last_claim_day_delta, 0 );
 }
 
 void token::close( name owner, const symbol& symbol )
@@ -298,11 +290,62 @@ void token::close( name owner, const symbol& symbol )
    eosio_assert( it != acnts.end(), "Balance row already deleted or never existed. Action won't have any effect." );
    eosio_assert( it->balance.amount == 0, "Cannot close because the balance is not zero." );
 
+   // delete extras table row too
+   extras xtrs( _self, owner.value );
+   auto itx = xtrs.find( symbol.code().raw() );
    // users cannot close their token records if they have already received income for the
    // current day. if this is not stopped, users can print infinite money by repeatedly closing and reopening.
-   eosio_assert( it->last_claim_day < get_today(), "Cannot close() yet: income was already claimed for today." );
-   
+   eosio_assert( itx->last_claim_day < get_today(), "Cannot close() yet: income was already claimed for today." );
+   xtrs.erase( itx );
+
    acnts.erase( it );
+}
+
+// This calls a transfer-to-self just to log a memo that explains what the UBI payment was.
+void token::log_claim( name claimant, asset claim_quantity, time_type last_claim_day, time_type last_claim_day_delta, time_type lost_days )
+{
+  string claim_memo = "[UBI] +";
+  claim_memo.append( claim_quantity.to_string() );
+  claim_memo.append(" (next: " );
+  claim_memo.append( days_to_string(last_claim_day + last_claim_day_delta + 1) );
+  claim_memo.append( ")" );
+  if (lost_days > 0) {
+    claim_memo.append(" (lost: ");
+    claim_memo.append( std::to_string(lost_days) );
+    claim_memo.append(" days of income)");
+  }
+
+  SEND_INLINE_ACTION( *this, transfer, { {claimant, "active"_n} },
+		      { claimant, claimant, claim_quantity, claim_memo }
+  );
+}
+
+// Input is days since epoch
+string token::days_to_string( int64_t days )
+{
+  // https://stackoverflow.com/questions/7960318/math-to-convert-seconds-since-1970-into-date-and-vice-versa
+  // http://howardhinnant.github.io/date_algorithms.html
+  days += 719468;
+  const int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+  const unsigned doe = static_cast<unsigned>(days - era * 146097);       // [0, 146096]
+  const unsigned yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;  // [0, 399]
+  const int64_t y = static_cast<int64_t>(yoe) + era * 400;
+  const unsigned doy = doe - (365*yoe + yoe/4 - yoe/100);                // [0, 365]
+  const unsigned mp = (5*doy + 2)/153;                                   // [0, 11]
+  const unsigned d = doy - (153*mp+2)/5 + 1;                             // [1, 31]
+  const unsigned m = mp + (mp < 10 ? 3 : -9);                            // [1, 12]
+  
+  string s = std::to_string(d);
+  if (s.length() == 1)
+    s = "0" + s;
+  s.append("-");
+  string ms = std::to_string(m);
+  if (ms.length() == 1)
+    ms = "0" + ms;
+  s.append( ms );
+  s.append("-");
+  s.append( std::to_string(y + (m <= 2)) );
+  return s;
 }
 
 } /// namespace eosio
