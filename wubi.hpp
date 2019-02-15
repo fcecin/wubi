@@ -14,6 +14,7 @@
 
 #include <eosiolib/asset.hpp>
 #include <eosiolib/eosio.hpp>
+#include <eosiolib/transaction.hpp>
 
 #include <string>
 
@@ -50,7 +51,7 @@ namespace eosio {
 
          [[eosio::action]]
          void close( name owner, const symbol& symbol );
-
+	 
          static asset get_supply( name token_contract_account, symbol_code sym_code )
          {
             stats statstable( token_contract_account, sym_code.raw() );
@@ -101,9 +102,11 @@ namespace eosio {
 
 	 typedef eosio::multi_index< "extras"_n, extra > extras;
 
-	 void log_claim( name claimant, asset claim_quantity, time_type last_claim_day, time_type last_claim_day_delta, time_type lost_days );
+	 void try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st );
+
+	 void log_claim( name claimant, asset claim_quantity, time_type next_last_claim_day, time_type lost_days );
  
-	 int64_t get_precision_multiplier ( const symbol& symbol ) {
+	 static int64_t get_precision_multiplier ( const symbol& symbol ) {
 	   int64_t precision_multiplier = 1;
 	   for (int i=0; i<symbol.precision(); ++i)
 	     precision_multiplier *= 10;
@@ -114,8 +117,32 @@ namespace eosio {
  
 	 static time_type get_today() { return (time_type)(current_time() / 86400000000); }
 
-	 static const int64_t claim_days = 30;
+	 // Before deploying this contract to your blockchain, make sure this function is doing what you want.
+	 // If you don't have KYC or any sort of ID check or de-duplication mechanism, this just returns true.
+	 // Otherwise, you will want to check whether an account likely belongs to an uniquified person or not.
+	 // Accounts not authorized to receive UBI at one point in time can be authorized to receive it at any
+	 //   point in the future (and have that authority randomly rescinded and granted again an unlimited
+	 //   number of times, at any time) and the contract will continue to work normally. Users who are
+	 //   later KYC'd will be able to claim up to "max_past_claim_days" days of back pay.
+	 bool can_claim_UBI( name claimant ) { return true; }
+	 
+	 // Set this to true if your blockchain allows an user to freely create and destroy the types of accounts
+	 //   that will be authorized to claim UBI.
+	 // This will ensure that newly created token accounts have a two-day grace period before they can claim
+	 //   any UBI (that is measured as whole days, so if you create an account at 11:59:59 PM, you have to wait
+	 //   one day plus one second, which is why we require two whole days). That's a bit inconvenient for the
+	 //   user, but it is necessary to avoid completely unbounded, zero-cost money printing.
+	 static const bool unbounded_UBI_account_creation = true; 
+	 
+	 // When UBI can be claimed, claim this amount of days. "1" means today's income only, and from 2 and
+	 //   onwards you are granting advance payments for future days.
+	 // For non-KYC, unbounded-account-creation EOSIO public deployments, you want to set this to 1.
+	 // For a proper KYC chain where users can't continuously create and destroy their KYC accounts to
+	 //   reset them, you can set this to 30 to grant users an entire month's worth of UBI at a time.
+	 // A value of zero (or less) is not supported by the current code.
+	 static const int64_t claim_days = 1;
 
+	 // Unclaimed UBI accumulates to this maximum days.
 	 static const int64_t max_past_claim_days = 360;
    };
 
