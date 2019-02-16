@@ -124,10 +124,8 @@ void token::transfer( name    from,
 
     auto payer = has_auth( to ) ? to : from;
 
-    // UBI claim check, if the "from" account is authorized to receive it.
-    // Also, the token contract account is NOT eligible for an UBI.
-    if ((can_claim_UBI( from )) && (from != _self))
-      try_ubi_claim( from, quantity.symbol, payer, statstable, st );
+    // Check for an UBI claim.
+    try_ubi_claim( from, quantity.symbol, payer, statstable, st );
         
     // Do the transfer.
     sub_balance( from, quantity );
@@ -188,8 +186,23 @@ void token::open( name owner, const symbol& symbol, name ram_payer )
 
    accounts acnts( _self, owner.value );
    auto it = acnts.find( sym_code_raw );
-   if ( it != acnts.end() )
+   if ( it != acnts.end() ) {
+     // Perform a regular UBI check.
+     // This is needed because open() plus unbounded_UBI_account_creation enabled will cause
+     //   the initial open() request to not actually credit any tokens. There will be a two-day
+     //   grace period, after which the user will not be able to call transfer() (since they will
+     //   have a balance of zero) but they will be able to call open() again, and since the
+     //   token record is already registered, this code path will trigger, allowing them to
+     //   to the regular UBI claim check and get their first tokens.
+     // open() can be used at any time to check for UBI. It's especially useful if an user
+     //   accidentally zeroes out their balance and is unable to call transfer() again.
+
+     // Check for an UBI claim.
+     try_ubi_claim( owner, symbol, ram_payer, statstable, st );
+
+     // We're done -- no need to actually create the token record -- so return.
      return;
+   }
 
    // we are assuming that every account in the system is an account tied to an unique
    // human identity. We will attempt to claim 1.0 token per day for the next 30 days.
@@ -261,6 +274,14 @@ void token::close( name owner, const symbol& symbol )
 // This was moved from transfer() to keep it readable.
 void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st )
 {
+  // Check if the "from" account is authorized to receive it.
+  if (! can_claim_UBI( from ))
+    return;
+
+  // The token contract account is NOT eligible for an UBI.
+  if (from == _self)
+    return;
+  
   extras from_xtrs( _self, from.value );
   const auto& from_extra = from_xtrs.get( sym.code().raw(), "no balance object found" );
   
