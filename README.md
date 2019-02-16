@@ -18,9 +18,11 @@ In addition to collecting income for days in the past, the user receives advance
 
 The issue() action is mostly useless, as tokens are issued automatically to users over time. There is no need to perform any kind of initial distribution.
 
-The retire() action has no authority checks. It is advised that the contract account be set as the sole issuer of all tokens created in this contract. That will mean the contract account is a "token burn pit" which allows any user to burn any tokens that are sent to the contract account.
+The retire() action has no authority checks if the issuer is the account contract itself. That will mean the contract account becomes a "token burn pit" which allows any user to burn any tokens that are sent to the contract account.
 
 The contract respects the max_supply parameter passed on create(), so if the intent is to create an uncapped supply token, the best that can be done is to use the largest supported value for max_supply (that will be around 460 trillion tokens if the token precision is set to 4).
+
+There are a few configuration options documented in the header file. An important one is "unbounded_UBI_account_creation", which should be set to "true" if you are going to deploy this into an EOSIO blockchain that doesn't have a KYC or user identification mechanism (that is, any user can create an unlimited number of accounts).
 
 ----
 
