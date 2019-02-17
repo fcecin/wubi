@@ -102,6 +102,8 @@ namespace eosio {
 
 	 typedef eosio::multi_index< "extras"_n, extra > extras;
 
+	 void create_extra_record( name owner, name ram_payer, uint64_t sym_code_raw );
+
 	 void try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st );
 
 	 void log_claim( name claimant, asset claim_quantity, time_type next_last_claim_day, time_type lost_days );

@@ -152,20 +152,7 @@ void token::add_balance( name owner, asset value, name ram_payer )
         a.balance = value;
       });
 
-      // Create the extras table row too.
-      // User will be able to claim their first UBI by giving any non-zero amount of what 
-      //   they just received to someone else.
-      extras xtrs( _self, owner.value );
-      xtrs.emplace( ram_payer, [&]( auto& a ){
-	a.symbol_code_raw = value.symbol.code().raw();
-	a.last_claim_day = get_today() - 1;
-
-	// if we are in an everything-goes, free EOSIO public chain, then
-	//   open() needs to add a two-day grace period for any UBI claims
-	//   to mitigate money printing by repeated account creation/destruction.
-	if (unbounded_UBI_account_creation)
-	  a.last_claim_day += 2;
-      });
+      create_extra_record( owner, ram_payer, value.symbol.code().raw() );
    } else {
       to_acnts.modify( to, same_payer, [&]( auto& a ) {
         a.balance += value;
@@ -186,70 +173,16 @@ void token::open( name owner, const symbol& symbol, name ram_payer )
 
    accounts acnts( _self, owner.value );
    auto it = acnts.find( sym_code_raw );
-   if ( it != acnts.end() ) {
-     // Perform a regular UBI check.
-     // This is needed because open() plus unbounded_UBI_account_creation enabled will cause
-     //   the initial open() request to not actually credit any tokens. There will be a two-day
-     //   grace period, after which the user will not be able to call transfer() (since they will
-     //   have a balance of zero) but they will be able to call open() again, and since the
-     //   token record is already registered, this code path will trigger, allowing them to
-     //   to the regular UBI claim check and get their first tokens.
-     // open() can be used at any time to check for UBI. It's especially useful if an user
-     //   accidentally zeroes out their balance and is unable to call transfer() again.
+   if ( it == acnts.end() ) {
+     acnts.emplace( ram_payer, [&]( auto& a ){
+	 a.balance = asset{0, symbol};
+       });
 
-     // Check for an UBI claim.
-     try_ubi_claim( owner, symbol, ram_payer, statstable, st );
-
-     // We're done -- no need to actually create the token record -- so return.
-     return;
+     create_extra_record( owner, ram_payer, sym_code_raw );
    }
 
-   // we are assuming that every account in the system is an account tied to an unique
-   // human identity. We will attempt to claim 1.0 token per day for the next 30 days.
-   int64_t precision_multiplier = get_precision_multiplier(symbol);
-   asset claim_quantity = asset{claim_days * precision_multiplier, symbol};
-
-   // The contract account never earns UBI.
-   // Or, if we are in an everything-goes, free EOSIO public chain, then
-   //   open() does not grant any tokens.
-   // Also check if the account is authorized to receive UBI (e.g. no KYC).
-   if ((owner == _self) || (unbounded_UBI_account_creation) || (! can_claim_UBI( owner )))
-     claim_quantity.set_amount(0);
-
-   // Respect the max_supply limit for UBI issuance.
-   int64_t available_amount = st.max_supply.amount - st.supply.amount;
-   if (claim_quantity.amount > available_amount)
-     claim_quantity.set_amount(available_amount);
-
-   // Update the token total supply to account for the issued UBI tokens.
-   statstable.modify( st, same_payer, [&]( auto& s ) {
-       s.supply += claim_quantity;
-     });
-
-   // Create the account with the initial UBI claim.
-   acnts.emplace( ram_payer, [&]( auto& a ){
-       a.balance = claim_quantity;
-     });
-
-   time_type last_claim_day = get_today() - 1;
-   time_type last_claim_day_delta = claim_quantity.amount / precision_multiplier;
-
-   // Create the extras table row too
-   extras xtrs( _self, owner.value );
-   xtrs.emplace( ram_payer, [&]( auto& a ){
-       a.symbol_code_raw = sym_code_raw;
-       a.last_claim_day = last_claim_day + last_claim_day_delta;
-
-       // if we are in an everything-goes, free EOSIO public chain, then
-       //   open() needs to add a two-day grace period for any UBI claims
-       //   to mitigate money printing by repeated account creation/destruction.
-       if (unbounded_UBI_account_creation)
-	 a.last_claim_day += 2;
-     });
-
-   // Log this basic income payment with a fake inline transfer action to self.
-   if (claim_quantity.amount > 0)
-     log_claim( owner, claim_quantity, last_claim_day + last_claim_day_delta, 0 );
+   // Perform a regular UBI check as part of any open() call.
+   try_ubi_claim( owner, symbol, ram_payer, statstable, st );
 }
 
 void token::close( name owner, const symbol& symbol )
@@ -269,6 +202,21 @@ void token::close( name owner, const symbol& symbol )
    xtrs.erase( itx );
 
    acnts.erase( it );
+}
+
+void token::create_extra_record( name owner, name ram_payer, uint64_t sym_code_raw )
+{
+  extras xtrs( _self, owner.value );
+  xtrs.emplace( ram_payer, [&]( auto& a ){
+      a.symbol_code_raw = sym_code_raw;
+      a.last_claim_day = get_today() - 1;
+      
+      // if we are in an everything-goes, free EOSIO public chain, then
+      //   open() needs to add a two-day grace period for any UBI claims
+      //   to mitigate money printing by repeated account creation/destruction.
+      if (unbounded_UBI_account_creation)
+	a.last_claim_day += 2;
+    });
 }
 
 // This was moved from transfer() to keep it readable.
