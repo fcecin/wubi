@@ -12,13 +12,13 @@ void token::create( name   issuer,
     require_auth( _self );
 
     auto sym = maximum_supply.symbol;
-    eosio_assert( sym.is_valid(), "invalid symbol name" );
-    eosio_assert( maximum_supply.is_valid(), "invalid supply");
-    eosio_assert( maximum_supply.amount > 0, "max-supply must be positive");
+    check( sym.is_valid(), "invalid symbol name" );
+    check( maximum_supply.is_valid(), "invalid supply");
+    check( maximum_supply.amount > 0, "max-supply must be positive");
 
     stats statstable( _self, sym.code().raw() );
     auto existing = statstable.find( sym.code().raw() );
-    eosio_assert( existing == statstable.end(), "token with symbol already exists" );
+    check( existing == statstable.end(), "token with symbol already exists" );
 
     statstable.emplace( _self, [&]( auto& s ) {
        s.supply.symbol = maximum_supply.symbol;
@@ -35,20 +35,20 @@ void token::create( name   issuer,
 void token::issue( name to, asset quantity, string memo )
 {
     auto sym = quantity.symbol;
-    eosio_assert( sym.is_valid(), "invalid symbol name" );
-    eosio_assert( memo.size() <= 256, "memo has more than 256 bytes" );
+    check( sym.is_valid(), "invalid symbol name" );
+    check( memo.size() <= 256, "memo has more than 256 bytes" );
 
     stats statstable( _self, sym.code().raw() );
     auto existing = statstable.find( sym.code().raw() );
-    eosio_assert( existing != statstable.end(), "token with symbol does not exist, create token before issue" );
+    check( existing != statstable.end(), "token with symbol does not exist, create token before issue" );
     const auto& st = *existing;
 
     require_auth( st.issuer );
-    eosio_assert( quantity.is_valid(), "invalid quantity" );
-    eosio_assert( quantity.amount > 0, "must issue positive quantity" );
+    check( quantity.is_valid(), "invalid quantity" );
+    check( quantity.amount > 0, "must issue positive quantity" );
 
-    eosio_assert( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
-    eosio_assert( quantity.amount <= st.max_supply.amount - st.supply.amount, "quantity exceeds available supply");
+    check( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
+    check( quantity.amount <= st.max_supply.amount - st.supply.amount, "quantity exceeds available supply");
 
     statstable.modify( st, same_payer, [&]( auto& s ) {
        s.supply += quantity;
@@ -67,22 +67,22 @@ void token::issue( name to, asset quantity, string memo )
 void token::retire( asset quantity, string memo )
 {
     auto sym = quantity.symbol;
-    eosio_assert( sym.is_valid(), "invalid symbol name" );
-    eosio_assert( memo.size() <= 256, "memo has more than 256 bytes" );
+    check( sym.is_valid(), "invalid symbol name" );
+    check( memo.size() <= 256, "memo has more than 256 bytes" );
 
     stats statstable( _self, sym.code().raw() );
     auto existing = statstable.find( sym.code().raw() );
-    eosio_assert( existing != statstable.end(), "token with symbol does not exist" );
+    check( existing != statstable.end(), "token with symbol does not exist" );
     const auto& st = *existing;
 
     // If the issuer is set to this contract, then anyone can retire the tokens.
     if (st.issuer != _self)
       require_auth( st.issuer );
     
-    eosio_assert( quantity.is_valid(), "invalid quantity" );
-    eosio_assert( quantity.amount > 0, "must retire positive quantity" );
+    check( quantity.is_valid(), "invalid quantity" );
+    check( quantity.amount > 0, "must retire positive quantity" );
 
-    eosio_assert( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
+    check( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
 
     statstable.modify( st, same_payer, [&]( auto& s ) {
        s.supply -= quantity;
@@ -98,14 +98,11 @@ void token::transfer( name    from,
                       asset   quantity,
                       string  memo )
 {
-    // We will use transfers to self as a way to log UBI issuance, so we have to allow them.
-    // Users doing transfers to self are harmless. If we're worried about spam, users can
-    //   already spam transfers between two accounts they own.
-    // Hopefully, wallets won't be confused by this.
-    //eosio_assert( from != to, "cannot transfer to self" );
+    // RESTORED: We no longer have to allow a transfer to self. 
+    check( from != to, "cannot transfer to self" );
 
     require_auth( from );
-    eosio_assert( is_account( to ), "to account does not exist" );
+    check( is_account( to ), "to account does not exist" );
     auto sym = quantity.symbol.code();
     stats statstable( _self, sym.raw() );
     const auto& st = statstable.get( sym.raw() );
@@ -113,14 +110,15 @@ void token::transfer( name    from,
     require_recipient( from );
     require_recipient( to );
 
-    eosio_assert( quantity.is_valid(), "invalid quantity" );
-    eosio_assert( quantity.amount > 0, "must transfer positive quantity" );
-    eosio_assert( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
-    eosio_assert( memo.size() <= 256, "memo has more than 256 bytes" );
+    check( quantity.is_valid(), "invalid quantity" );
+    check( quantity.amount > 0, "must transfer positive quantity" );
+    check( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
+    check( memo.size() <= 256, "memo has more than 256 bytes" );
 
-    // Sending to self is a no-op. Just log it.
-    if (from == to)
-      return;
+    // Our fake "transfers to self" we used for logging UBI payments are no longer needed.
+    // 
+    //if (from == to)
+    //  return;
 
     auto payer = has_auth( to ) ? to : from;
 
@@ -136,7 +134,7 @@ void token::sub_balance( name owner, asset value ) {
    accounts from_acnts( _self, owner.value );
 
    const auto& from = from_acnts.get( value.symbol.code().raw(), "no balance object found" );
-   eosio_assert( from.balance.amount >= value.amount, "overdrawn balance" );
+   check( from.balance.amount >= value.amount, "overdrawn balance" );
 
    from_acnts.modify( from, owner, [&]( auto& a ) {
          a.balance -= value;
@@ -160,7 +158,7 @@ void token::add_balance( name owner, asset value, name ram_payer )
    }
 }
 
-// Opening an account will immediately reward the user with UBI.
+// Creates the UBI timer "extra" table entry as well as the token balance entry.
 void token::open( name owner, const symbol& symbol, name ram_payer )
 {
    require_auth( ram_payer );
@@ -169,7 +167,7 @@ void token::open( name owner, const symbol& symbol, name ram_payer )
 
    stats statstable( _self, sym_code_raw );
    const auto& st = statstable.get( sym_code_raw, "symbol does not exist" );
-   eosio_assert( st.supply.symbol == symbol, "symbol precision mismatch" );
+   check( st.supply.symbol == symbol, "symbol precision mismatch" );
 
    accounts acnts( _self, owner.value );
    auto it = acnts.find( sym_code_raw );
@@ -181,8 +179,16 @@ void token::open( name owner, const symbol& symbol, name ram_payer )
      create_extra_record( owner, ram_payer, sym_code_raw );
    }
 
+   // Since an UBI claim no longer generates the fake logging transfer call,
+   //  it is somewhat bad for open() to credit any tokens because wallets won't
+   //  have a shot at receiving a following transfer action that tips them off to
+   //  updating their own balance.
+   //
+   // So, for now, get your initial ACORNs (or additional ACORNs if you accidentally
+   //  run out) from someone else or from a faucet.
+   //
    // Perform a regular UBI check as part of any open() call.
-   try_ubi_claim( owner, symbol, ram_payer, statstable, st );
+   //try_ubi_claim( owner, symbol, ram_payer, statstable, st );
 }
 
 void token::close( name owner, const symbol& symbol )
@@ -190,15 +196,15 @@ void token::close( name owner, const symbol& symbol )
    require_auth( owner );
    accounts acnts( _self, owner.value );
    auto it = acnts.find( symbol.code().raw() );
-   eosio_assert( it != acnts.end(), "Balance row already deleted or never existed. Action won't have any effect." );
-   eosio_assert( it->balance.amount == 0, "Cannot close because the balance is not zero." );
+   check( it != acnts.end(), "Balance row already deleted or never existed. Action won't have any effect." );
+   check( it->balance.amount == 0, "Cannot close because the balance is not zero." );
 
    // delete extras table row too
    extras xtrs( _self, owner.value );
    auto itx = xtrs.find( symbol.code().raw() );
    // users cannot close their token records if they have already received income for the
    // current day. if this is not stopped, users can print infinite money by repeatedly closing and reopening.
-   eosio_assert( itx->last_claim_day < get_today(), "Cannot close() yet: income was already claimed for today." );
+   check( itx->last_claim_day < get_today(), "Cannot close() yet: income was already claimed for today." );
    xtrs.erase( itx );
 
    acnts.erase( it );
@@ -286,12 +292,15 @@ void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& stat
   }
 }
 
-// This calls a transfer-to-self just to log a memo that explains what the UBI payment was.
+// Logging the UBI claim to the console.
+// The fake logging transfer causes problems to other contracts.
 void token::log_claim( name claimant, asset claim_quantity, time_type next_last_claim_day, time_type lost_days )
 {
-  string claim_memo = "[UBI] +";
+  string claim_memo = "[UBI] ";
+  claim_memo.append( claimant.to_string() );
+  claim_memo.append( " +" );
   claim_memo.append( claim_quantity.to_string() );
-  claim_memo.append(" (next: " );
+  claim_memo.append( " (next: " );
   claim_memo.append( days_to_string(next_last_claim_day + 1) );
   claim_memo.append( ")" );
   if (lost_days > 0) {
@@ -300,9 +309,11 @@ void token::log_claim( name claimant, asset claim_quantity, time_type next_last_
     claim_memo.append(" days of income)");
   }
 
-  SEND_INLINE_ACTION( *this, transfer, { {claimant, "active"_n} },
-		      { claimant, claimant, claim_quantity, claim_memo }
-  );
+  eosio::print( claim_memo );
+
+  //SEND_INLINE_ACTION( *this, transfer, { {claimant, "active"_n} },
+  //		      { claimant, claimant, claim_quantity, claim_memo }
+  //);
 }
 
 // Input is days since epoch

@@ -12,9 +12,9 @@
  */
 #pragma once
 
-#include <eosiolib/asset.hpp>
-#include <eosiolib/eosio.hpp>
-#include <eosiolib/transaction.hpp>
+#include <eosio/asset.hpp>
+#include <eosio/eosio.hpp>
+#include <eosio/transaction.hpp>
 
 #include <string>
 
@@ -117,7 +117,7 @@ namespace eosio {
 
 	 static string days_to_string( int64_t days );
  
-	 static time_type get_today() { return (time_type)(current_time() / 86400000000); }
+	 static time_type get_today() { return (time_type)(current_time_point().sec_since_epoch() / 86400); }
 
 	 // Before deploying this contract to your blockchain, make sure this function is doing what you want.
 	 // If you don't have KYC or any sort of ID check or de-duplication mechanism, this just returns true.
