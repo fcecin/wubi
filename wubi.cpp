@@ -98,7 +98,6 @@ void token::transfer( name    from,
                       asset   quantity,
                       string  memo )
 {
-    // RESTORED: We no longer have to allow a transfer to self. 
     check( from != to, "cannot transfer to self" );
 
     require_auth( from );
@@ -114,11 +113,6 @@ void token::transfer( name    from,
     check( quantity.amount > 0, "must transfer positive quantity" );
     check( quantity.symbol == st.supply.symbol, "symbol precision mismatch" );
     check( memo.size() <= 256, "memo has more than 256 bytes" );
-
-    // Our fake "transfers to self" we used for logging UBI payments are no longer needed.
-    // 
-    //if (from == to)
-    //  return;
 
     auto payer = has_auth( to ) ? to : from;
 
@@ -148,9 +142,14 @@ void token::add_balance( name owner, asset value, name ram_payer )
    if( to == to_acnts.end() ) {
       to_acnts.emplace( ram_payer, [&]( auto& a ){
         a.balance = value;
+	a.last_claim_day = get_today() - 1;
+      
+	// if we are in an everything-goes, free EOSIO public chain, then
+	//   open() needs to add a two-day grace period for any UBI claims
+	//   to mitigate money printing by repeated account creation/destruction.
+	if (unbounded_UBI_account_creation)
+	  a.last_claim_day += 2;
       });
-
-      create_extra_record( owner, ram_payer, value.symbol.code().raw() );
    } else {
       to_acnts.modify( to, same_payer, [&]( auto& a ) {
         a.balance += value;
@@ -158,7 +157,6 @@ void token::add_balance( name owner, asset value, name ram_payer )
    }
 }
 
-// Creates the UBI timer "extra" table entry as well as the token balance entry.
 void token::open( name owner, const symbol& symbol, name ram_payer )
 {
    require_auth( ram_payer );
@@ -175,20 +173,7 @@ void token::open( name owner, const symbol& symbol, name ram_payer )
      acnts.emplace( ram_payer, [&]( auto& a ){
 	 a.balance = asset{0, symbol};
        });
-
-     create_extra_record( owner, ram_payer, sym_code_raw );
    }
-
-   // Since an UBI claim no longer generates the fake logging transfer call,
-   //  it is somewhat bad for open() to credit any tokens because wallets won't
-   //  have a shot at receiving a following transfer action that tips them off to
-   //  updating their own balance.
-   //
-   // So, for now, get your initial ACORNs (or additional ACORNs if you accidentally
-   //  run out) from someone else or from a faucet.
-   //
-   // Perform a regular UBI check as part of any open() call.
-   //try_ubi_claim( owner, symbol, ram_payer, statstable, st );
 }
 
 void token::close( name owner, const symbol& symbol )
@@ -198,31 +183,8 @@ void token::close( name owner, const symbol& symbol )
    auto it = acnts.find( symbol.code().raw() );
    check( it != acnts.end(), "Balance row already deleted or never existed. Action won't have any effect." );
    check( it->balance.amount == 0, "Cannot close because the balance is not zero." );
-
-   // delete extras table row too
-   extras xtrs( _self, owner.value );
-   auto itx = xtrs.find( symbol.code().raw() );
-   // users cannot close their token records if they have already received income for the
-   // current day. if this is not stopped, users can print infinite money by repeatedly closing and reopening.
-   check( itx->last_claim_day < get_today(), "Cannot close() yet: income was already claimed for today." );
-   xtrs.erase( itx );
-
+   check( it->last_claim_day < get_today(), "Cannot close() yet: income was already claimed for today." );
    acnts.erase( it );
-}
-
-void token::create_extra_record( name owner, name ram_payer, uint64_t sym_code_raw )
-{
-  extras xtrs( _self, owner.value );
-  xtrs.emplace( ram_payer, [&]( auto& a ){
-      a.symbol_code_raw = sym_code_raw;
-      a.last_claim_day = get_today() - 1;
-      
-      // if we are in an everything-goes, free EOSIO public chain, then
-      //   open() needs to add a two-day grace period for any UBI claims
-      //   to mitigate money printing by repeated account creation/destruction.
-      if (unbounded_UBI_account_creation)
-	a.last_claim_day += 2;
-    });
 }
 
 // This was moved from transfer() to keep it readable.
@@ -236,19 +198,19 @@ void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& stat
   if (from == _self)
     return;
   
-  extras from_xtrs( _self, from.value );
-  const auto& from_extra = from_xtrs.get( sym.code().raw(), "no balance object found" );
+  accounts from_acnts( _self, from.value );
+  const auto& from_account = from_acnts.get( sym.code().raw(), "no balance object found" );
   
   const time_type today = get_today();
   
-  if (from_extra.last_claim_day < today) {
+  if (from_account.last_claim_day < today) {
     
     // The UBI grants 1 token per day per account. 
     // Users will automatically issue their own money as a side-effect of giving money to others.
     
     // Compute the claim amount relative to days elapsed since the last claim, excluding today's pay.
     // If you claimed yesterday, this is zero.
-    int64_t claim_amount = today - from_extra.last_claim_day - 1;
+    int64_t claim_amount = today - from_account.last_claim_day - 1;
     // The limit for claiming accumulated past income is 360 days/coins. Unclaimed tokens past that
     //   one year maximum of accumulation are lost.
     time_type lost_days = 0;
@@ -273,7 +235,7 @@ void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& stat
     if (claim_quantity.amount > 0) {
       
       // Log this basic income payment with a fake inline transfer action to self.
-      log_claim( from, claim_quantity, from_extra.last_claim_day + last_claim_day_delta, lost_days );
+      log_claim( from, claim_quantity, from_account.last_claim_day + last_claim_day_delta, lost_days );
       
       // Update the token total supply.
       statstable.modify( st, same_payer, [&]( auto& s ) {
@@ -282,7 +244,7 @@ void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& stat
       
       // Finally, move the claim date window proportional to the amount of days of income we claimed
       //   (and also account for days of income that have been forever lost)
-      from_xtrs.modify( from_extra, from, [&]( auto& a ) {
+      from_acnts.modify( from_account, from, [&]( auto& a ) {
 	  a.last_claim_day += last_claim_day_delta;
 	});
       
@@ -292,8 +254,7 @@ void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& stat
   }
 }
 
-// Logging the UBI claim to the console.
-// The fake logging transfer causes problems to other contracts.
+// Logs the UBI claim to the console.
 void token::log_claim( name claimant, asset claim_quantity, time_type next_last_claim_day, time_type lost_days )
 {
   string claim_memo = "[UBI] ";
@@ -310,10 +271,6 @@ void token::log_claim( name claimant, asset claim_quantity, time_type next_last_
   }
 
   eosio::print( claim_memo );
-
-  //SEND_INLINE_ACTION( *this, transfer, { {claimant, "active"_n} },
-  //		      { claimant, claimant, claim_quantity, claim_memo }
-  //);
 }
 
 // Input is days since epoch

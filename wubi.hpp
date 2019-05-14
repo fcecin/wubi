@@ -71,7 +71,8 @@ namespace eosio {
 
          struct [[eosio::table]] account {
 	    asset     balance;
-
+	    time_type last_claim_day;
+	    
             uint64_t primary_key()const { return balance.symbol.code().raw(); }
          };
 
@@ -88,21 +89,6 @@ namespace eosio {
 
          void sub_balance( name owner, asset value );
          void add_balance( name owner, asset value, name ram_payer );
-
-	 // Unfortunately, we need to waste a ton of space to store an extra 16 bits per user account
-	 //    to conform to the interface expected by eosio.token.
-	 // As with the "account" struct, the scope is recycled as the token holder, and the primary
-	 //    key of our structure is the token symbol code.
-	 struct [[eosio::table]] extra {
-	    uint64_t  symbol_code_raw;
-	    time_type last_claim_day;
-
-	    uint64_t primary_key()const { return symbol_code_raw; }
-	 };
-
-	 typedef eosio::multi_index< "extras"_n, extra > extras;
-
-	 void create_extra_record( name owner, name ram_payer, uint64_t sym_code_raw );
 
 	 void try_ubi_claim( name from, const symbol& sym, name payer, stats& statstable, const currency_stats& st );
 
