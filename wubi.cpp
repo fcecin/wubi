@@ -254,23 +254,23 @@ void token::try_ubi_claim( name from, const symbol& sym, name payer, stats& stat
   }
 }
 
-// Logs the UBI claim to the console.
+// Logs the UBI claim as an "income" action that only the contract can call.
 void token::log_claim( name claimant, asset claim_quantity, time_type next_last_claim_day, time_type lost_days )
 {
-  string claim_memo = "[UBI] ";
-  claim_memo.append( claimant.to_string() );
-  claim_memo.append( " +" );
-  claim_memo.append( claim_quantity.to_string() );
-  claim_memo.append( " (next: " );
+  string claim_memo = "next on ";
   claim_memo.append( days_to_string(next_last_claim_day + 1) );
-  claim_memo.append( ")" );
   if (lost_days > 0) {
-    claim_memo.append(" (lost: ");
+    claim_memo.append(", lost ");
     claim_memo.append( std::to_string(lost_days) );
-    claim_memo.append(" days of income)");
+    claim_memo.append(" days of income.");
   }
 
-  eosio::print( claim_memo );
+  action {
+    permission_level{_self, name("active")},
+    _self,
+    name("income"),
+    income_notification_abi { .to=claimant, .quantity=claim_quantity, .memo=claim_memo }
+  }.send();
 }
 
 // Input is days since epoch
@@ -301,6 +301,13 @@ string token::days_to_string( int64_t days )
   return s;
 }
 
+// UBI payment notification action (users can't call this action, it's used just for logging its parameters)
+void token::income( name to, asset quantity, string memo ) {
+  require_auth( _self );
+  require_recipient( to );
+}
+
+
 } /// namespace eosio
 
-EOSIO_DISPATCH( eosio::token, (create)(issue)(transfer)(open)(close)(retire) )
+EOSIO_DISPATCH( eosio::token, (create)(issue)(transfer)(open)(close)(retire)(income) )
